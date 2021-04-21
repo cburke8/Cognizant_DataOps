@@ -6,10 +6,13 @@ from pyspark.sql import functions as psf
 
 import os
 ####test
+#Test2
 
 spark = SparkSession.builder.appName("DataOps").config("hive.metastore.connect.retries",5).config("hive.metastore.client.factory.class","com.amazonaws.glue.catalog.metastore.AWSGlueDataCatalogHiveClientFactory").enableHiveSupport().getOrCreate()
 sqlContext = SQLContext(spark)
 spark.sparkContext.setLogLevel("ERROR")
+
+
 
 
 bronze_path = 's3://citi-bike-batch-data-con/bronze/'
