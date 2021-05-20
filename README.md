@@ -1,2 +1,2 @@
 # Cognizant_DataOps
-Repo to connect to AWS Environment though Code Pipeline. Will contain Pyspark and CFT (IaC)
+Repo for DataOps CFT version control, includes main template and mwaa template
