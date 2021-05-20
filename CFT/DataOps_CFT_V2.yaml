@@ -1,0 +1,1052 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Parameters:
+  airflowBucket:
+    Description: Name of bucket being created for airflow
+    Type: String
+    Default: airflow-citibike-qa
+  bronze:
+    Description: Name of bucket being created for S3 bronze storage
+    Type: String
+    Default: citibike-qa-bronze
+  silver:
+    Description: Name of bucket being created for S3 silver storage
+    Type: String
+    Default: citibike-qa-silver
+  gold:
+    Description: Name of bucket being created for S3 gold storage
+    Type: String
+    Default: citibike-qa-gold
+  depend:
+    Description: Name of existing bucket with Request Layer dependencies
+    Type: String
+    Default: citibike-layer-zip
+  ZipFileName:
+    Description: Please enter name of the file that you have stored in your S3 dependency bucket
+    Type: String
+    Default: lambda_layer_requests.zip
+  Username:
+    Description: Default username of Redshift admin
+    Type: String
+    Default: awsuser
+  Password:
+    Description: Default password of Redshift admin
+    Type: String
+    Default: AWSuser123
+  Repobucket:
+    Description: Name of new Repository bucket for CodeCommit
+    Type: String
+    Default: citi-bike-dataops-glue-code
+  bronzesilverpath:
+    Description: Path of bronze to silver ETL Code
+    Type: String
+    Default: 's3://citi-bike-dataops-glue-code/data-ops-code-qa/spark_demo_one.py'
+  silvergoldpath:
+    Description: Path of silver to gold ETL Code
+    Type: String
+    Default: 's3://citi-bike-dataops-glue-code/data-ops-code-qa/spark_demo_two.py'
+  goldredshiftpath:
+    Description: Path of gold to redshift ETL Code
+    Type: String
+    Default: 's3://citi-bike-dataops-glue-code/data-ops-code-qa/spark_demo_three.py'
+  glueDBName:
+    Description: Name of glue data catalog
+    Type: String
+    Default: cognizant_glue_db_citi_bike
+  apiGatewayName:
+    Description: Name of API gateway
+    Type: String
+    Default: ingestion_api
+  apiGatewayStageName:
+    Description: Name of API gateway Stage
+    Type: String
+    AllowedPattern: "[a-z0-9]+"
+    Default: gatewaystage
+  apiGatewayHTTPMethod:
+    Description: Type of API gateway HTTP method
+    Type: String
+    Default: POST
+  RedshiftDB:
+    Description: Name of Redshift Database
+    Type: String
+    Default: dev
+  lambdaCodeBucket:
+    Description: Name of existing bucket with lambda code
+    Type: String
+    Default: replicated-lambda-cft
+  BronzeToSilverKey:
+    Description: Source code key of Bronze to Silver Validation
+    Type: String
+    Default: bronze_to_silver.zip
+  SilverToGoldKey:
+    Description: Source code key of Silver to Gold Validation
+    Type: String
+    Default: silver_to_gold.zip
+  GoldToRedshiftKey:
+    Description: Source code key of Gold to Redshift Validation
+    Type: String
+    Default: c_validate.zip
+  IngestionAPIKey:
+    Description: Source code key of ingestion to S3 Bronze bucket
+    Type: String
+    Default: workcode-test-Send_Data_S3.zip
+  TriggerKey:
+    Description: Source code key of Airflow trigger
+    Type: String
+    Default: trigger_dag_test_one-ad863dc0-0395-461e-ac5b-2426617b697d.zip
+  region:
+    Description: Region of AWS environment
+    Type: String
+    Default: us-east-2
+  publicSubnetOneAZ:
+    Description: AZ of of public subnet one
+    Type: String
+    Default: us-east-2a
+  publicSubnetTwoAZ:
+    Description: AZ of of public subnet two
+    Type: String
+    Default: us-east-2b
+  VPCCIDR:
+    Description: CIDR block of the VPC
+    Type: String
+    Default: 172.22.128.0/24
+  publicSubnetOneCIDR:
+    Description: CIDR block of of of public subnet one
+    Type: String
+    Default: 172.22.128.0/26
+  publicSubnetTwoCIDR:
+    Description: CIDR block of of of public subnet two
+    Type: String
+    Default: 172.22.128.64/26
+  PrivateSubnetCIDR:
+    Description: CIDR block of of of private subnet one
+    Type: String
+    Default: 172.22.128.128/26
+  PrivateSubnetTwoCIDR:
+    Description: CIDR block of of of private subnet two
+    Type: String
+    Default:  172.22.128.192/26
+  LayerName:
+    Description: Please enter name of the layer for the request module
+    Type: String
+    Default: requests
+  s3validationbucket:
+    Description: Please enter the name of the bucket for validation queries to write to
+    Type: String
+    Default: citibike-validation-output
+
+Resources:
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Description: API Gateway
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Name: !Ref apiGatewayName
+
+
+  ApiGatewayRootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt IngestionAPI.Arn
+      ResourceId: !GetAtt ApiGateway.RootResourceId
+      RestApiId: !Ref ApiGateway
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - ApiGatewayRootMethod
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: !Ref apiGatewayStageName
+  lambdaApiGatewayInvoke:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt IngestionAPI.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/${apiGatewayStageName}/${apiGatewayHTTPMethod}/
+
+  RequestDepend:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      Content:
+        S3Bucket: !Ref depend
+        S3Key: !Ref ZipFileName
+      Description: The dependency for the requests module in the DagTrigger lambda function
+      LayerName: !Ref LayerName
+
+  BronzeToSilver:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref lambdaCodeBucket
+        S3Key: !Ref BronzeToSilverKey
+      FunctionName: validate_bronze_to_silver
+      Handler: validate_bronze_to_silver.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt DataOpsLambdaRole.Arn
+      Runtime: python3.7
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: cece8caa-6bf0-47f8-8269-2ff2cf98bb64
+  SilverToGold:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref lambdaCodeBucket
+        S3Key: !Ref SilverToGoldKey
+      FunctionName: validate_silver_to_gold
+      Handler: validate_silver_to_gold.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt DataOpsLambdaRole.Arn
+      Runtime: python3.7
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: e6b0eec9-11ba-4c4d-bb78-931d1f09a570
+  CValidate:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref lambdaCodeBucket
+        S3Key: !Ref GoldToRedshiftKey
+      FunctionName: c_validate
+      Handler: c_validate.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt DataOpsLambdaRole.Arn
+      Runtime: python3.7
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 980fef3c-8208-4e65-8594-4599ee1493f9
+  IngestionAPI:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref lambdaCodeBucket
+        S3Key: !Ref IngestionAPIKey
+      FunctionName: workcode-test-Send_Data_S3
+      Handler: workcode-test-Send_Data_S3.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt DataOpsLambdaRole.Arn
+      Runtime: python3.7
+      Layers:
+        - !Ref RequestDepend
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 2fe6b19a-7c45-4e6e-a6eb-694ad281ae98
+  S3AirflowQA:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref airflowBucket
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: d604a3e2-9b7a-4a8d-b4d5-a489b8136e77
+  S3Silver:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref silver
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+  S3Gold:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref gold
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+  S3Validate:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref s3validationbucket
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+  DataOpsLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+        - 'arn:aws:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess'
+        - 'arn:aws:iam::aws:policy/CloudWatchLogsFullAccess'
+        - 'arn:aws:iam::aws:policy/AWSLambda_FullAccess'
+      Path: /
+
+
+  TriggerDag:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        S3Bucket: !Ref lambdaCodeBucket
+        S3Key: !Ref TriggerKey
+      Handler: lambda_function.lambda_handler
+      MemorySize: 128
+      Role: !GetAtt DataOpsTriggerRole.Arn
+      Runtime: python3.7
+      FunctionName: TriggerDag
+      Layers:
+        - !Ref RequestDepend
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 94179364-fe8e-4217-bee7-d2aed626c9fd
+  S3Bronze:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref bronze
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: flase
+        RestrictPublicBuckets: false
+
+
+
+
+  DataOpsTriggerRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+        - 'arn:aws:iam::aws:policy/AmazonAPIGatewayInvokeFullAccess'
+        - 'arn:aws:iam::aws:policy/CloudWatchLogsFullAccess'
+        - 'arn:aws:iam::aws:policy/AWSLambda_FullAccess'
+        - 'arn:aws:iam::aws:policy/AmazonRedshiftFullAccess'
+      Path: /
+
+  RedshiftCluster:
+    Type: 'AWS::Redshift::Cluster'
+    DependsOn: AttachGateway
+    Properties:
+      ClusterType: single-node
+      NodeType: ds2.xlarge
+      DBName: !Ref RedshiftDB
+      MasterUsername: !Ref Username
+      MasterUserPassword: !Ref Password
+      IamRoles:
+        - !GetAtt RedshiftRole.Arn
+      ClusterParameterGroupName: !Ref RedshiftClusterParameterGroup
+      VpcSecurityGroupIds:
+        - !Ref SecurityGroup
+      ClusterSubnetGroupName: !Ref RedshiftClusterSubnetGroup
+      PubliclyAccessible: true
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 0c025985-c435-46e5-8ae9-ac687be0d4bb
+  RedshiftClusterParameterGroup:
+    Type: 'AWS::Redshift::ClusterParameterGroup'
+    Properties:
+      Description: Cluster parameter group
+      ParameterGroupFamily: redshift-1.0
+      Parameters:
+        - ParameterName: enable_user_activity_logging
+          ParameterValue: 'true'
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: f2270ccb-2f9b-4b4a-ab36-fbf0e16a6cfc
+  RedshiftClusterSubnetGroup:
+    Type: 'AWS::Redshift::ClusterSubnetGroup'
+    Properties:
+      Description: Cluster subnet group
+      SubnetIds:
+        - !Ref PublicSubnet
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 77af1efd-9ae1-4663-be32-bbe8280ebd97
+
+  RedshiftRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+        - 'arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole'
+        - 'arn:aws:iam::aws:policy/AWSGlueConsoleFullAccess'
+      Path: /
+
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: !Ref VPCCIDR
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 3c332005-074e-4ee4-a080-d485b6521d5b
+  PublicSubnetTwo:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: !Ref publicSubnetTwoCIDR
+      AvailabilityZone: !Ref publicSubnetOneAZ
+      VpcId: !Ref VPC
+  PublicSubnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      CidrBlock: !Ref publicSubnetOneCIDR
+      AvailabilityZone: !Ref publicSubnetOneAZ
+      VpcId: !Ref VPC
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 124ec97a-a5b0-4ea6-90eb-6673f8c8b803
+
+  SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Security group
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5439
+          ToPort: 5439
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VPC
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 259774a6-cc63-44f4-bfe2-739b11725220
+  myInternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 758d2855-5ef3-44d9-a7ca-03da3f483b26
+
+  GlueS3Connection:
+    Type: AWS::Glue::Connection
+    Properties:
+      CatalogId: !Ref 'AWS::AccountId'
+      ConnectionInput:
+        ConnectionType: NETWORK
+        Description: Glue Connection to S3 buckets
+        Name: S3Connector
+        PhysicalConnectionRequirements:
+           AvailabilityZone: !Ref publicSubnetOneAZ
+           SecurityGroupIdList:
+             - !Ref SecurityGroup
+           SubnetId: !Ref PublicSubnet
+  AttachGateway:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref myInternetGateway
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 0b981904-2511-4367-a61b-d3063d167eac
+  PublicRouteTable:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref VPC
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: d5d6cf12-9f49-45e4-be3d-fa3b95a778f
+
+
+  PublicRoute:
+    Type: 'AWS::EC2::Route'
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref myInternetGateway
+
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 3edd2fd8-06a0-45b9-869a-990231f60e9b
+  PublicSubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 3f18acf1-7d7d-44a8-9349-f2e5723b0d45
+  GlueCode:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref Repobucket
+      AccessControl: PublicReadWrite
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: d04ee90e-de54-4f6b-8d5c-a5b6b2116aae
+  BronzeToSilverJob:
+    Type: 'AWS::Glue::Job'
+    Properties:
+      Command:
+        Name: glueetl
+        PythonVersion: '3'
+        ScriptLocation: !Ref bronzesilverpath
+      Description: Bronze to Silver ETL Job
+      Name: BronzeToSilver
+      Role: !Ref GlueExecutionRole
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: cca72d87-cf83-4a46-8901-531ca16ae114
+  SilverToSilverGold:
+    Type: 'AWS::Glue::Job'
+    Properties:
+      Command:
+        Name: glueetl
+        PythonVersion: '3'
+        ScriptLocation: !Ref silvergoldpath
+      Description: Silver to Gold ETL Job
+      Name: SilverToGold
+      Role: !Ref GlueExecutionRole
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: fb5b48fd-cfaf-4196-aad7-8c574be4a660
+  GoldToRedshift:
+    Type: 'AWS::Glue::Job'
+    Properties:
+      Command:
+        Name: glueetl
+        PythonVersion: '3'
+        ScriptLocation: !Ref goldredshiftpath
+      Description: Gold to Redshift Job
+      Name: GoldToRedshift
+      Role: !Ref GlueExecutionRole
+
+
+  GlueExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - states.amazonaws.com
+                - events.amazonaws.com
+            Action: 'sts:AssumeRole'
+      RoleName: GlueExecutionRole
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: 32a0c644-33ce-4dfb-8ac9-c7410d268164
+  GluePolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      Roles:
+        - !Ref GlueExecutionRole
+      PolicyName: GluePolicy
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action: 's3:*'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'glue:*'
+              - 's3:GetBucketLocation'
+              - 's3:ListBucket'
+              - 's3:ListAllMyBuckets'
+              - 's3:GetBucketAcl'
+              - 'ec2:DescribeVpcEndpoints'
+              - 'ec2:DescribeRouteTables'
+              - 'ec2:CreateNetworkInterface'
+              - 'ec2:DeleteNetworkInterface'
+              - 'ec2:DescribeNetworkInterfaces'
+              - 'ec2:DescribeSecurityGroups'
+              - 'ec2:DescribeSubnets'
+              - 'ec2:DescribeVpcAttribute'
+              - 'iam:ListRolePolicies'
+              - 'iam:GetRole'
+              - 'iam:GetRolePolicy'
+              - 'cloudwatch:PutMetricData'
+            Resource:
+              - '*'
+          - Effect: Allow
+            Action:
+              - 's3:CreateBucket'
+            Resource:
+              - 'arn:aws:s3:::aws-glue-*'
+          - Effect: Allow
+            Action:
+              - 's3:GetObject'
+              - 's3:PutObject'
+              - 's3:DeleteObject'
+            Resource:
+              - 'arn:aws:s3:::aws-glue-*/*'
+              - 'arn:aws:s3:::*/*aws-glue-*/*'
+          - Effect: Allow
+            Action:
+              - 's3:GetObject'
+            Resource:
+              - 'arn:aws:s3:::crawler-public*'
+              - 'arn:aws:s3:::aws-glue-*'
+          - Effect: Allow
+            Action:
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+            Resource:
+              - 'arn:aws:logs:*:*:/aws-glue/*'
+          - Effect: Allow
+            Action:
+              - 'ec2:CreateTags'
+              - 'ec2:DeleteTags'
+            Condition:
+              'ForAllValues:StringEquals':
+                'aws:TagKeys':
+                  - aws-glue-service-resource
+            Resource:
+              - 'arn:aws:ec2:*:*:network-interface/*'
+              - 'arn:aws:ec2:*:*:security-group/*'
+              - 'arn:aws:ec2:*:*:instance/*'
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: bcea425b-0a41-424b-94d4-006beeb0229e
+  GlueDatabaseDemo:
+    Type: 'AWS::Glue::Database'
+    Properties:
+      CatalogId: !Ref 'AWS::AccountId'
+      DatabaseInput:
+        Description: Glue Database Layer
+        Name: !Ref glueDBName
+    Metadata:
+      'AWS::CloudFormation::Designer':
+        id: c71cd981-799a-4c30-b1a4-4eef128d0dd7
+  NatGatewayEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+
+  NatGatewayEIP2:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEIP2.AllocationId
+      SubnetId: !Ref PublicSubnetTwo
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  DefaultPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs  '' ]
+      CidrBlock: !Ref PrivateSubnetCIDR
+      MapPublicIpOnLaunch: false
+  PrivateSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs  '' ]
+      CidrBlock: !Ref PrivateSubnetTwoCIDR
+      MapPublicIpOnLaunch: false
+
+  S3Endpoint:
+    Type: 'AWS::EC2::VPCEndpoint'
+    Properties:
+     PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action:
+              - '*'
+            Resource:
+             - !GetAtt S3Bronze.Arn
+             - !GetAtt S3Silver.Arn
+             - !GetAtt S3Gold.Arn
+     RouteTableIds:
+      - !Ref PublicRouteTable
+      - !Ref PrivateRouteTable1
+     ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+     VpcId: !Ref VPC
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  DefaultPrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      SubnetId: !Ref PrivateSubnetTwo
+
+Outputs:
+  apiGatewayInvokeURL:
+    Value: !Sub https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${apiGatewayStageName}
+  triggerArn:
+    Value: !GetAtt TriggerDag.Arn
+  bronzeOutput:
+    Value: !Ref S3Bronze
+  redshiftSubnet:
+    Value: !Ref PublicSubnet
+  redshiftSG:
+    Value: !Ref SecurityGroup
+  redshiftJDBC:
+    Value: !Sub jdbc:redshift://${RedshiftCluster.Endpoint.Address}:5439/${RedshiftDB}
+
+Metadata:
+  'AWS::CloudFormation::Designer':
+    c71cd981-799a-4c30-b1a4-4eef128d0dd7:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 990
+        'y': 90
+      z: 1
+      embeds: []
+    63c736c6-5553-461b-8f93-7cb058c5cd1f:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 990
+        'y': 210
+      z: 1
+      embeds: []
+    f7dec4d5-6d0b-44e0-b880-613303b78bdf:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 990
+        'y': 330
+      z: 1
+      embeds: []
+    59a0eac5-a3c4-4f99-856d-3fd162583ea4:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 990
+        'y': 450
+      z: 1
+      embeds: []
+    3c3994ea-f0a2-4fcb-827f-f4d982bc94f0:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 990
+        'y': 570
+      z: 1
+      embeds: []
+    32a0c644-33ce-4dfb-8ac9-c7410d268164:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 990
+        'y': 690
+      z: 1
+      embeds: []
+    bcea425b-0a41-424b-94d4-006beeb0229e:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 990
+        'y': 810
+      z: 1
+      embeds: []
+      isassociatedwith:
+        - 32a0c644-33ce-4dfb-8ac9-c7410d268164
+    8a1d275e-0ec0-4e99-833d-cb8ecab8703b:
+      size:
+        width: 150
+        height: 150
+      position:
+        x: 60
+        'y': 930
+      z: 1
+      embeds: []
+    fb5b48fd-cfaf-4196-aad7-8c574be4a660:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 270
+        'y': 930
+      z: 1
+      embeds: []
+    cca72d87-cf83-4a46-8901-531ca16ae114:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 390
+        'y': 930
+      z: 1
+      embeds: []
+    d04ee90e-de54-4f6b-8d5c-a5b6b2116aae:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 510
+        'y': 930
+      z: 1
+      embeds: []
+    758d2855-5ef3-44d9-a7ca-03da3f483b26:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 630
+        'y': 930
+      z: 1
+      embeds: []
+    3c332005-074e-4ee4-a080-d485b6521d5b:
+      size:
+        width: 870
+        height: 780
+      position:
+        x: 50
+        'y': 10
+      z: 1
+      embeds:
+        - d5d6cf12-9f49-45e4-be3d-fa3b95a778f2
+        - 259774a6-cc63-44f4-bfe2-739b11725220
+        - 124ec97a-a5b0-4ea6-90eb-6673f8c8b803
+    d5d6cf12-9f49-45e4-be3d-fa3b95a778f2:
+      size:
+        width: 240
+        height: 240
+      position:
+        x: 560
+        'y': 70
+      z: 2
+      parent: 3c332005-074e-4ee4-a080-d485b6521d5b
+      embeds:
+        - 3edd2fd8-06a0-45b9-869a-990231f60e9b
+      iscontainedinside:
+        - 3c332005-074e-4ee4-a080-d485b6521d5b
+    0b981904-2511-4367-a61b-d3063d167eac:
+      source:
+        id: 3c332005-074e-4ee4-a080-d485b6521d5b
+      target:
+        id: 758d2855-5ef3-44d9-a7ca-03da3f483b26
+    3edd2fd8-06a0-45b9-869a-990231f60e9b:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 590
+        'y': 130
+      z: 3
+      parent: d5d6cf12-9f49-45e4-be3d-fa3b95a778f2
+      embeds: []
+      isassociatedwith:
+        - 758d2855-5ef3-44d9-a7ca-03da3f483b26
+      iscontainedinside:
+        - d5d6cf12-9f49-45e4-be3d-fa3b95a778f2
+      dependson:
+        - 0b981904-2511-4367-a61b-d3063d167eac
+    259774a6-cc63-44f4-bfe2-739b11725220:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 560
+        'y': 370
+      z: 2
+      parent: 3c332005-074e-4ee4-a080-d485b6521d5b
+      embeds: []
+      iscontainedinside:
+        - 3c332005-074e-4ee4-a080-d485b6521d5b
+    124ec97a-a5b0-4ea6-90eb-6673f8c8b803:
+      size:
+        width: 420
+        height: 420
+      position:
+        x: 80
+        'y': 70
+      z: 2
+      parent: 3c332005-074e-4ee4-a080-d485b6521d5b
+      embeds:
+        - 77af1efd-9ae1-4663-be32-bbe8280ebd97
+      iscontainedinside:
+        - 3c332005-074e-4ee4-a080-d485b6521d5b
+    3f18acf1-7d7d-44a8-9349-f2e5723b0d45:
+      source:
+        id: d5d6cf12-9f49-45e4-be3d-fa3b95a778f2
+      target:
+        id: 124ec97a-a5b0-4ea6-90eb-6673f8c8b803
+    77af1efd-9ae1-4663-be32-bbe8280ebd97:
+      size:
+        width: 240
+        height: 240
+      position:
+        x: 110
+        'y': 130
+      z: 3
+      parent: 124ec97a-a5b0-4ea6-90eb-6673f8c8b803
+      embeds:
+        - 0c025985-c435-46e5-8ae9-ac687be0d4bb
+      iscontainedinside:
+        - 124ec97a-a5b0-4ea6-90eb-6673f8c8b803
+    f2270ccb-2f9b-4b4a-ab36-fbf0e16a6cfc:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 750
+        'y': 930
+      z: 1
+      embeds: []
+    0c025985-c435-46e5-8ae9-ac687be0d4bb:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 140
+        'y': 190
+      z: 4
+      parent: 77af1efd-9ae1-4663-be32-bbe8280ebd97
+      embeds: []
+      isassociatedwith:
+        - 259774a6-cc63-44f4-bfe2-739b11725220
+        - f2270ccb-2f9b-4b4a-ab36-fbf0e16a6cfc
+      iscontainedinside:
+        - 77af1efd-9ae1-4663-be32-bbe8280ebd97
+      dependson:
+        - 0b981904-2511-4367-a61b-d3063d167eac
+    b440b1a3-840d-464a-b371-cb39a3e3097e:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 870
+        'y': 930
+      z: 1
+      embeds: []
+    d604a3e2-9b7a-4a8d-b4d5-a489b8136e77:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 990
+        'y': 930
+      z: 1
+      embeds: []
+    1ff11737-6d0b-41cc-b723-89547444a18b:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 1110
+        'y': 90
+      z: 1
+      embeds: []
+    2fe6b19a-7c45-4e6e-a6eb-694ad281ae98:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 1110
+        'y': 210
+      z: 1
+      embeds: []
+    94179364-fe8e-4217-bee7-d2aed626c9fd:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 1110
+        'y': 330
+      z: 1
+      embeds: []
+    980fef3c-8208-4e65-8594-4599ee1493f9:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 1110
+        'y': 450
+      z: 1
+      embeds: []
+    e6b0eec9-11ba-4c4d-bb78-931d1f09a570:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 1110
+        'y': 570
+      z: 1
+      embeds: []
+    cece8caa-6bf0-47f8-8269-2ff2cf98bb64:
+      size:
+        width: 60
+        height: 60
+      position:
+        x: 1110
+        'y': 690
+      z: 1
+      embeds: []
