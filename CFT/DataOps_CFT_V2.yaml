@@ -322,7 +322,7 @@ Resources:
       PublicAccessBlockConfiguration:
         BlockPublicAcls: false
         BlockPublicPolicy: false
-        IgnorePublicAcls: flase
+        IgnorePublicAcls: false
         RestrictPublicBuckets: false
 
 

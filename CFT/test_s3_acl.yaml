@@ -1,0 +1,29 @@
+AWSTemplateFormatVersion: 2010-09-09
+
+Resources:
+  S3Test:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: qa-code-bucket-test
+
+  S3TestPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties: 
+      Bucket: qa-code-bucket-test
+      PolicyDocument: {
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+                "AWS": "arn:aws:iam::113963802852:root"
+            },
+            "Action": [
+                "s3:*"
+            ],
+            "Resource": [
+                "arn:aws:s3:::qa-code-bucket-test",
+                "arn:aws:s3:::qa-code-bucket-test/*"
+            ]
+          }
+        ]
+      }
